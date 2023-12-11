@@ -1,54 +1,19 @@
 #include <iostream>
 #include <cstdlib>
 #include <chrono>
+#include <ctime>
 #include <thread>
 #include <unistd.h>
-#include "json.hpp" 
-#include "mqtt/client.h" 
+#include "json.hpp" // json handling
+#include "mqtt/client.h" // paho mqtt
+#include <iomanip>
 
 #define QOS 1
 #define BROKER_ADDRESS "tcp://localhost:1883"
-#define GRAPHITE_HOST "graphite"
-#define GRAPHITE_PORT 2003
-
-void post_metric(const std::string& machine_id, const std::string& sensor_id, const std::string& timestamp_str, const int value) {
-
-}
-
-std::vector<std::string> split(const std::string &str, char delim) {
-    std::vector<std::string> tokens;
-    std::string token;
-    std::istringstream tokenStream(str);
-    while (std::getline(tokenStream, token, delim)) {
-        tokens.push_back(token);
-    }
-    return tokens;
-}
 
 int main(int argc, char* argv[]) {
-    std::string clientId = "clientId";
-    mqtt::async_client client(BROKER_ADDRESS, clientId);
-
-    // Create an MQTT callback.
-    class callback : public virtual mqtt::callback {
-    public:
-
-        void message_arrived(mqtt::const_message_ptr msg) override {
-            auto j = nlohmann::json::parse(msg->get_payload());
-
-            std::string topic = msg->get_topic();
-            auto topic_parts = split(topic, '/');
-            std::string machine_id = topic_parts[2];
-            std::string sensor_id = topic_parts[3];
-
-            std::string timestamp = j["timestamp"];
-            int value = j["value"];
-            post_metric(machine_id, sensor_id, timestamp, value);
-        }
-    };
-
-    callback cb;
-    client.set_callback(cb);
+    std::string clientId = "sensor-monitor";
+    mqtt::client client(BROKER_ADDRESS, clientId);
 
     // Connect to the MQTT broker.
     mqtt::connect_options connOpts;
@@ -57,13 +22,41 @@ int main(int argc, char* argv[]) {
 
     try {
         client.connect(connOpts);
-        client.subscribe("/sensors/#", QOS);
     } catch (mqtt::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return EXIT_FAILURE;
     }
+    std::clog << "connected to the broker" << std::endl;
+
+    // Get the unique machine identifier, in this case, the hostname.
+    char hostname[1024];
+    gethostname(hostname, 1024);
+    std::string machineId(hostname);
 
     while (true) {
+       // Get the current time in ISO 8601 format.
+        auto now = std::chrono::system_clock::now();
+        std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+        std::tm* now_tm = std::localtime(&now_c);
+        std::stringstream ss;
+        ss << std::put_time(now_tm, "%FT%TZ");
+        std::string timestamp = ss.str();
+
+        // Generate a random value.
+        int value = rand();
+
+        // Construct the JSON message.
+        nlohmann::json j;
+        j["timestamp"] = timestamp;
+        j["value"] = value;
+
+        // Publish the JSON message to the appropriate topic.
+        std::string topic = "/sensors/" + machineId + "/rand";
+        mqtt::message msg(topic, j.dump(), QOS, false);
+        std::clog << "message published - topic: " << topic << " - message: " << j.dump() << std::endl;
+        client.publish(msg);
+
+        // Sleep for some time.
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
